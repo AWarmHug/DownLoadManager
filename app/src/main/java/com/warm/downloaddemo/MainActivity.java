@@ -1,5 +1,6 @@
 package com.warm.downloaddemo;
 
+import android.app.DownloadManager;
 import android.content.Intent;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
@@ -21,8 +22,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void down(){
-        Intent intent=new Intent(this,DownLoadService.class);
-        intent.putExtra(DownLoadService.PATH,"http://imtt.dd.qq.com/16891/CCE1007FAC2B71E4B61CEFDEB8AF1ECA.apk?fsname=flipboard.cn_3.5.7.0_289305.apk&csr=1bbd");
-        startService(intent);
+
+        AppDown appDown=new AppDown.Builder(this)
+                .setDownPath("http://imtt.dd.qq.com/16891/CCE1007FAC2B71E4B61CEFDEB8AF1ECA.apk?fsname=flipboard.cn_3.5.7.0_289305.apk&csr=1bbd")
+                .setApkName("cc.apk")
+                .setNetType(DownloadManager.Request.NETWORK_MOBILE)
+//                .setParentDir(getPackageName())
+                .build();
+        appDown.startDownLoad();
+
     }
 }

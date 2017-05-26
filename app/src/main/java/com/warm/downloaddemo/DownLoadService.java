@@ -13,8 +13,6 @@ import android.os.IBinder;
 import android.support.annotation.Nullable;
 import android.util.Log;
 
-import java.io.File;
-
 /**
  * 作者: 51hs_android
  * 时间: 2017/5/25
@@ -23,15 +21,24 @@ import java.io.File;
 
 public class DownLoadService extends Service {
 
-    public static final String PATH = "path";
+    public static final String URI = "uri";
+    public static final String APK_NAME="apkName";
+    public static final String PARENT_DIR="parent";
+    public static final String NOTIFI_TITLE="notifiTitle";
+    public static final String NOTIFI_DESCRIPTION="notifiDescription";
+    public static final String NET_TYPE="netType";
+
 
     public static final long DOWN_ID = 1001;
 
     private DownloadManager manager;
 
-    private String filePath = Environment.getExternalStorageDirectory().getAbsolutePath();
-
-    private String fileName = "cc.apk";
+    private String notifiTitle;
+    private String notifiDescription;
+    private Uri downUri;
+    private String parentDir;
+    private String apkName;
+    private int netType;
 
     private SuccessReceiver receiver;
 
@@ -44,18 +51,59 @@ public class DownLoadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Uri uri = Uri.parse(intent.getStringExtra(PATH));
+
+        notifiTitle=intent.getStringExtra(NOTIFI_TITLE);
+        notifiDescription=intent.getStringExtra(NOTIFI_DESCRIPTION);
+        downUri=intent.getParcelableExtra(URI);
+        apkName=intent.getStringExtra(APK_NAME);
+        parentDir=intent.getStringExtra(PARENT_DIR);
+        netType=intent.getIntExtra(NET_TYPE, DownloadManager.Request.NETWORK_WIFI);
         manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-        DownloadManager.Request request = new DownloadManager.Request(uri);
+
+        //初始化DownloadManager，传入下载Uri
+        DownloadManager.Request request = new DownloadManager.Request(downUri);
+
         //设置是否显示Notification和相关信息
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-        request.setTitle(getString(R.string.app_name));
-        request.setDescription("正在下载！");
+
+
+//        request.setAllowedNetworkTypes(netType);
+
+        //设置Notification标题
+        if (notifiTitle!=null)
+        request.setTitle(notifiTitle);
+
+        //设置Notification描述
+        if (notifiDescription!=null)
+        request.setDescription(notifiTitle);
+
         request.setVisibleInDownloadsUi(true);
 
 
-        request.setDestinationInExternalPublicDir(getPackageName() + "/apk", fileName);
+        if (parentDir==null) {
+            /**
+             *传入文件夹类型，系统类型
+             * The type of files directory to return. May be {@code null}
+             *            for the root of the files directory or one of the following
+             *            constants for a subdirectory:
+             *            {@link android.os.Environment#DIRECTORY_MUSIC},
+             *            {@link android.os.Environment#DIRECTORY_PODCASTS},
+             *            {@link android.os.Environment#DIRECTORY_RINGTONES},
+             *            {@link android.os.Environment#DIRECTORY_ALARMS},
+             *            {@link android.os.Environment#DIRECTORY_NOTIFICATIONS},
+             *            {@link android.os.Environment#DIRECTORY_PICTURES}, or
+             *            {@link android.os.Environment#DIRECTORY_MOVIES}.
+             */
+            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS,apkName);
+        }else {
+            //只需要传入文件夹名称,和文件名称,可以放置到外部任意文件夹
+            request.setDestinationInExternalPublicDir(parentDir, apkName);
+        }
+
+//        request.setDestinationUri()
+
         request.allowScanningByMediaScanner();
+
         manager.enqueue(request);
 
         receiver = new SuccessReceiver();
@@ -116,9 +164,9 @@ public class DownLoadService extends Service {
         DownloadManager.Query query = new DownloadManager.Query();
         //通过下载的id查找
         query.setFilterById(downloadId);
-        Cursor c = manager.query(query);
-        if (c.moveToFirst()) {
-            int status = c.getInt(c.getColumnIndex(DownloadManager.COLUMN_STATUS));
+        Cursor cursor = manager.query(query);
+        if (cursor.moveToFirst()) {
+            int status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS));
             switch (status) {
                 //下载暂停
                 case DownloadManager.STATUS_PAUSED:
@@ -131,6 +179,7 @@ public class DownLoadService extends Service {
                     break;
                 //下载完成
                 case DownloadManager.STATUS_SUCCESSFUL:
+                    stopSelf();
                     //下载完成安装APK
                     installApk(downloadId);
                     break;
