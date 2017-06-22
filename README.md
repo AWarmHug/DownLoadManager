@@ -1,3 +1,3 @@
 # DownLoadManager
 下载文件
-DownloadManager初尝试
+DownloadManager更新下载Apk。
