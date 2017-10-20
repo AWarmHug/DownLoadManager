@@ -6,12 +6,17 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
 import android.support.annotation.Nullable;
+import android.support.v4.content.FileProvider;
 import android.util.Log;
+
+import java.io.File;
 
 /**
  * 作者: 51hs_android
@@ -19,14 +24,14 @@ import android.util.Log;
  * 简介:
  */
 
-public class DownLoadService extends Service {
+public class DownLoadService extends Service  {
 
     public static final String URI = "uri";
-    public static final String APK_NAME="apkName";
-    public static final String PARENT_DIR="parent";
-    public static final String NOTIFI_TITLE="notifiTitle";
-    public static final String NOTIFI_DESCRIPTION="notifiDescription";
-    public static final String NET_TYPE="netType";
+    public static final String APK_NAME = "apkName";
+    public static final String PARENT_DIR = "parent";
+    public static final String NOTIFI_TITLE = "notifiTitle";
+    public static final String NOTIFI_DESCRIPTION = "notifiDescription";
+    public static final String NET_TYPE = "netType";
 
 
     public static final long DOWN_ID = 1001;
@@ -52,14 +57,40 @@ public class DownLoadService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
 
-        notifiTitle=intent.getStringExtra(NOTIFI_TITLE);
-        notifiDescription=intent.getStringExtra(NOTIFI_DESCRIPTION);
-        downUri=intent.getParcelableExtra(URI);
-        apkName=intent.getStringExtra(APK_NAME);
-        parentDir=intent.getStringExtra(PARENT_DIR);
-        netType=intent.getIntExtra(NET_TYPE, DownloadManager.Request.NETWORK_WIFI);
+        notifiTitle = intent.getStringExtra(NOTIFI_TITLE);
+        notifiDescription = intent.getStringExtra(NOTIFI_DESCRIPTION);
+        downUri = intent.getParcelableExtra(URI);
+        apkName = intent.getStringExtra(APK_NAME);
+        parentDir = intent.getStringExtra(PARENT_DIR);
+        netType = intent.getIntExtra(NET_TYPE, DownloadManager.Request.NETWORK_WIFI);
         manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
 
+        File file=getApkFile();
+        if (file.exists()) {
+            installApkByFile(file);
+            stopSelf();
+            return super.onStartCommand(intent, flags, startId);
+        }
+
+
+
+        if (isDownloadManagerAvailable()) {
+            initDownLoadManager();
+        }else {
+            Intent chrome= new Intent(Intent.ACTION_VIEW,downUri);
+            chrome.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(chrome);
+            stopSelf();
+
+        }
+
+
+        return super.onStartCommand(intent, flags, startId);
+    }
+
+
+
+    private void initDownLoadManager() {
         //初始化DownloadManager，传入下载Uri
         DownloadManager.Request request = new DownloadManager.Request(downUri);
 
@@ -70,34 +101,34 @@ public class DownLoadService extends Service {
 //        request.setAllowedNetworkTypes(netType);
 
         //设置Notification标题
-        if (notifiTitle!=null)
-        request.setTitle(notifiTitle);
+        if (notifiTitle != null)
+            request.setTitle(notifiTitle);
 
         //设置Notification描述
-        if (notifiDescription!=null)
-        request.setDescription(notifiTitle);
+        if (notifiDescription != null)
+            request.setDescription(notifiTitle);
 
         request.setVisibleInDownloadsUi(true);
 
 
-        if (parentDir==null) {
+        if (parentDir == null) {
             /**
              *传入文件夹类型，系统类型
              * The type of files directory to return. May be {@code null}
              *            for the root of the files directory or one of the following
              *            constants for a subdirectory:
-             *            {@link android.os.Environment#DIRECTORY_MUSIC},
-             *            {@link android.os.Environment#DIRECTORY_PODCASTS},
-             *            {@link android.os.Environment#DIRECTORY_RINGTONES},
-             *            {@link android.os.Environment#DIRECTORY_ALARMS},
-             *            {@link android.os.Environment#DIRECTORY_NOTIFICATIONS},
-             *            {@link android.os.Environment#DIRECTORY_PICTURES}, or
-             *            {@link android.os.Environment#DIRECTORY_MOVIES}.
+             *            {@link Environment#DIRECTORY_MUSIC},
+             *            {@link Environment#DIRECTORY_PODCASTS},
+             *            {@link Environment#DIRECTORY_RINGTONES},
+             *            {@link Environment#DIRECTORY_ALARMS},
+             *            {@link Environment#DIRECTORY_NOTIFICATIONS},
+             *            {@link Environment#DIRECTORY_PICTURES}, or
+             *            {@link Environment#DIRECTORY_MOVIES}.
              */
-            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS,apkName);
-        }else {
+            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, apkName);
+        } else {
             //只需要传入文件夹名称,和文件名称,可以放置到外部任意文件夹
-            request.setDestinationInExternalPublicDir(parentDir, apkName);
+            request.setDestinationUri(Uri.fromFile(new File(parentDir, apkName)));
         }
 
 //        request.setDestinationUri()
@@ -109,8 +140,6 @@ public class DownLoadService extends Service {
         receiver = new SuccessReceiver();
 
         registerReceiver(receiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
-
-        return super.onStartCommand(intent, flags, startId);
     }
 
     /**
@@ -179,9 +208,10 @@ public class DownLoadService extends Service {
                     break;
                 //下载完成
                 case DownloadManager.STATUS_SUCCESSFUL:
-                    stopSelf();
                     //下载完成安装APK
-                    installApk(downloadId);
+                    installApkById(downloadId);
+
+                    stopSelf();
                     break;
                 //下载失败
                 case DownloadManager.STATUS_FAILED:
@@ -194,29 +224,74 @@ public class DownLoadService extends Service {
     /**
      * 安装软件
      */
-    private void installApk(long downloadApkId) {
-        Intent install = new Intent(Intent.ACTION_VIEW);
-        Uri downloadFileUri = null;
-        downloadFileUri = manager.getUriForDownloadedFile(downloadApkId);
+    private void installApkById(long downloadApkId) {
+        Uri downloadFileUri = manager.getUriForDownloadedFile(downloadApkId);
         DownloadManager.Query query = new DownloadManager.Query();
         query.setFilterById(downloadApkId);
-        final Cursor c = manager.query(query);
-
-        if (c.moveToFirst()) {
+        Cursor c = manager.query(query);
+        if (c != null && c.moveToFirst()) {
             downloadFileUri = Uri.parse(c.getString(c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)));
+            c.close();
         }
-        if (downloadFileUri != null) {
-            install.setDataAndType(downloadFileUri, "application/vnd.android.package-archive");
+        install(downloadFileUri);
+    }
+
+    private File getApkFile(){
+        File file;
+        if (parentDir == null) {
+            file = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), apkName);
+        } else {
+            file = new File(parentDir, apkName);
+        }
+        return file;
+    }
+
+
+    private void installApkByFile(File apkFile) {
+        Uri apkFileUri;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            apkFileUri = FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".provider", apkFile);
+        } else {
+            apkFileUri = Uri.fromFile(apkFile);
+        }
+        install(apkFileUri);
+    }
+
+    private void install(Uri apkFileUri) {
+        if (apkFileUri != null) {
+            Intent install = new Intent(Intent.ACTION_VIEW);
+            install.setDataAndType(apkFileUri, "application/vnd.android.package-archive");
+            install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(install);
         } else {
+
+        }
+
+    }
+
+
+    private boolean isDownloadManagerAvailable() {
+        try {
+            if (getPackageManager().getApplicationEnabledSetting("com.android.providers.downloads") == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER
+                    || getPackageManager().getApplicationEnabledSetting("com.android.providers.downloads") == PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                    || getPackageManager().getApplicationEnabledSetting("com.android.providers.downloads") == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED) {
+
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
+
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        unregisterReceiver(receiver);
+        if (receiver != null) {
+            unregisterReceiver(receiver);
+        }
 
     }
 }
