@@ -1,9 +1,8 @@
 package com.warm.downloaddemo;
 
 import android.app.DownloadManager;
-import android.content.Intent;
-import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+import android.support.v7.app.AppCompatActivity;
 import android.view.View;
 
 public class MainActivity extends AppCompatActivity {
@@ -29,7 +28,7 @@ public class MainActivity extends AppCompatActivity {
                 .setNetType(DownloadManager.Request.NETWORK_MOBILE)
 //                .setParentDir(getPackageName())
                 .build();
-        appDown.startDownLoad();
+        appDown.start();
 
     }
 }

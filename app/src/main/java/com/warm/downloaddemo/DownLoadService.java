@@ -7,16 +7,24 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.database.ContentObserver;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Environment;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.support.annotation.Nullable;
 import android.support.v4.content.FileProvider;
 import android.util.Log;
 
 import java.io.File;
+import java.util.TimerTask;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 作者: 51hs_android
@@ -26,6 +34,8 @@ import java.io.File;
 
 public class DownLoadService extends Service  {
 
+    private static final String TAG = "DownLoadService--";
+
     public static final String URI = "uri";
     public static final String APK_NAME = "apkName";
     public static final String PARENT_DIR = "parent";
@@ -34,7 +44,7 @@ public class DownLoadService extends Service  {
     public static final String NET_TYPE = "netType";
 
 
-    public static final long DOWN_ID = 1001;
+    public long downloadId;
 
     private DownloadManager manager;
 
@@ -44,8 +54,24 @@ public class DownLoadService extends Service  {
     private String parentDir;
     private String apkName;
     private int netType;
+    private Handler mHandler=new Handler(Looper.getMainLooper());
 
-    private SuccessReceiver receiver;
+    private SuccessReceiver mReceiver;
+
+
+    //    private Timer mTimer;
+    private ScheduledExecutorService mService;
+
+    private OnProgressListener mListener;
+
+    private DownLoadContentObserver mObserver;
+
+
+
+
+    public void setOnProgressListener(OnProgressListener mListener) {
+        this.mListener = mListener;
+    }
 
 
     @Override
@@ -57,6 +83,13 @@ public class DownLoadService extends Service  {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
 
+        initData(intent);
+
+        checkOrDownload();
+        return super.onStartCommand(intent, flags, startId);
+    }
+
+    private void initData(Intent intent) {
         notifiTitle = intent.getStringExtra(NOTIFI_TITLE);
         notifiDescription = intent.getStringExtra(NOTIFI_DESCRIPTION);
         downUri = intent.getParcelableExtra(URI);
@@ -64,33 +97,33 @@ public class DownLoadService extends Service  {
         parentDir = intent.getStringExtra(PARENT_DIR);
         netType = intent.getIntExtra(NET_TYPE, DownloadManager.Request.NETWORK_WIFI);
         manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+    }
 
-        File file=getApkFile();
-        if (file.exists()) {
-            installApkByFile(file);
-            stopSelf();
-            return super.onStartCommand(intent, flags, startId);
-        }
+    private void checkOrDownload() {
 
-
-
+//        File file = getApkFile();
+//        if (file.exists()) {
+//            installApkByFile(file);
+//            stopSelf();
+//        } else {
         if (isDownloadManagerAvailable()) {
             initDownLoadManager();
-        }else {
-            Intent chrome= new Intent(Intent.ACTION_VIEW,downUri);
+        } else {
+            Intent chrome = new Intent(Intent.ACTION_VIEW, downUri);
             chrome.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(chrome);
             stopSelf();
-
         }
+//        }
 
-
-        return super.onStartCommand(intent, flags, startId);
     }
 
 
-
     private void initDownLoadManager() {
+
+        mObserver=new DownLoadContentObserver(mHandler);
+        mObserver.registerContentObserver();
+
         //初始化DownloadManager，传入下载Uri
         DownloadManager.Request request = new DownloadManager.Request(downUri);
 
@@ -135,12 +168,33 @@ public class DownLoadService extends Service  {
 
         request.allowScanningByMediaScanner();
 
-        manager.enqueue(request);
+        downloadId = manager.enqueue(request);
 
-        receiver = new SuccessReceiver();
+        mService = Executors.newSingleThreadScheduledExecutor();
 
-        registerReceiver(receiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+
+        mReceiver = new SuccessReceiver();
+
+        registerReceiver(mReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+
     }
+    /**
+     * 检查一遍
+     */
+    private void updateProgress() {
+        final int[] progress = getBytesAndStatus(downloadId);
+//        mRunnable.setProgress();
+        mHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (mListener!=null){
+                    mListener.onProgress(progress[0],progress[1],progress[2]);
+                }
+            }
+        });
+
+    }
+
 
     /**
      * 返回当前下载进度
@@ -149,21 +203,49 @@ public class DownLoadService extends Service  {
      * @return {已下载，总和，下载进度}
      */
     public int[] getBytesAndStatus(long downloadId) {
-        int[] bytesAndStatus = new int[]{-1, -1, 0};
+        int[] bytesAndStatus = new int[]{0, 100, 0};
         DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
-        Cursor c = null;
+        Cursor cursor = null;
         try {
-            c = manager.query(query);
-            if (c != null && c.moveToFirst()) {
-                bytesAndStatus[0] = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
-                bytesAndStatus[1] = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
-                bytesAndStatus[2] = c.getInt(c.getColumnIndex(DownloadManager.COLUMN_STATUS));
+            cursor = manager.query(query);
+            if (cursor != null && cursor.moveToFirst()) {
+
+                int status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS));
+                switch (status) {
+                    //下载暂停
+                    case DownloadManager.STATUS_PAUSED:
+                        cancel();
+                        break;
+                    //下载延迟
+                    case DownloadManager.STATUS_PENDING:
+
+                        break;
+                    //正在下载
+                    case DownloadManager.STATUS_RUNNING:
+                        bytesAndStatus[0] = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+                        bytesAndStatus[1] = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+                        break;
+                    //下载完成
+                    case DownloadManager.STATUS_SUCCESSFUL:
+                        cancel();
+                        //下载完成安装APK
+                        installApkById(downloadId);
+                        stopSelf();
+                        break;
+                    //下载失败
+                    case DownloadManager.STATUS_FAILED:
+                        cancel();
+                        break;
+                }
+                bytesAndStatus[2] = status;
             }
         } finally {
-            if (c != null) {
-                c.close();
+            if (cursor != null) {
+                cursor.close();
             }
         }
+
+
         return bytesAndStatus;
     }
 
@@ -171,61 +253,25 @@ public class DownLoadService extends Service  {
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
-        return null;
+        initData(intent);
+
+        checkOrDownload();
+
+        return new DownLoadBinder();
     }
 
 
-    public class SuccessReceiver extends BroadcastReceiver {
-        private static final String TAG = "SuccessReceiver";
 
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            long completeDownloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-            Log.d(TAG, "onReceive: ");
-            checkStatus(completeDownloadId);
-        }
-
-    }
-
-
-    //检查下载状态
-    private void checkStatus(long downloadId) {
-        DownloadManager.Query query = new DownloadManager.Query();
-        //通过下载的id查找
-        query.setFilterById(downloadId);
-        Cursor cursor = manager.query(query);
-        if (cursor.moveToFirst()) {
-            int status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS));
-            switch (status) {
-                //下载暂停
-                case DownloadManager.STATUS_PAUSED:
-                    break;
-                //下载延迟
-                case DownloadManager.STATUS_PENDING:
-                    break;
-                //正在下载
-                case DownloadManager.STATUS_RUNNING:
-                    break;
-                //下载完成
-                case DownloadManager.STATUS_SUCCESSFUL:
-                    //下载完成安装APK
-                    installApkById(downloadId);
-
-                    stopSelf();
-                    break;
-                //下载失败
-                case DownloadManager.STATUS_FAILED:
-
-                    break;
-            }
-        }
-    }
 
     /**
-     * 安装软件
+     * 根据DownLoadId 获取Uri
+     *
+     * @param downloadApkId
+     * @return
      */
-    private void installApkById(long downloadApkId) {
+    private Uri getUriByDownLoadId(long downloadApkId) {
         Uri downloadFileUri = manager.getUriForDownloadedFile(downloadApkId);
+
         DownloadManager.Query query = new DownloadManager.Query();
         query.setFilterById(downloadApkId);
         Cursor c = manager.query(query);
@@ -233,12 +279,21 @@ public class DownLoadService extends Service  {
             downloadFileUri = Uri.parse(c.getString(c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)));
             c.close();
         }
+        return downloadFileUri;
+    }
+
+    /**
+     * 安装软件
+     */
+    private void installApkById(long downloadApkId) {
+        Uri downloadFileUri = getUriByDownLoadId(downloadApkId);
         install(downloadFileUri);
     }
 
-    private File getApkFile(){
+    private File getApkFile() {
         File file;
         if (parentDir == null) {
+
             file = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), apkName);
         } else {
             file = new File(parentDir, apkName);
@@ -276,7 +331,6 @@ public class DownLoadService extends Service  {
             if (getPackageManager().getApplicationEnabledSetting("com.android.providers.downloads") == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER
                     || getPackageManager().getApplicationEnabledSetting("com.android.providers.downloads") == PackageManager.COMPONENT_ENABLED_STATE_DISABLED
                     || getPackageManager().getApplicationEnabledSetting("com.android.providers.downloads") == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED) {
-
                 return false;
             }
             return true;
@@ -286,12 +340,104 @@ public class DownLoadService extends Service  {
     }
 
 
+
+
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if (receiver != null) {
-            unregisterReceiver(receiver);
+        if (mObserver!=null) {
+            mObserver.unregisterContentObserver();
+        }
+        if (mHandler!=null) {
+            mHandler.removeCallbacksAndMessages(null);
+            mHandler = null;
+        }
+        cancel();
+
+    }
+
+    class DownLoadBinder extends Binder {
+
+        DownLoadService getDownLoadService() {
+            return DownLoadService.this;
         }
 
     }
+
+
+
+    private void schedule() {
+        if (mService != null) {
+
+            mService.scheduleWithFixedDelay(new TimerTask() {
+                @Override
+                public void run() {
+                    updateProgress();
+                }
+            }, 0, 1, TimeUnit.SECONDS);
+        }
+    }
+
+    private void cancel() {
+        if (mService != null) {
+            mService.shutdown();
+        }
+    }
+
+
+
+    public class SuccessReceiver extends BroadcastReceiver {
+        private static final String TAG = "SuccessReceiver";
+
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            long completeDownloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+            Log.d(TAG, "onReceive: ");
+            updateProgress();
+        }
+
+    }
+
+    private class DownLoadContentObserver extends ContentObserver {
+        /**
+         * Creates a content observer.
+         *
+         * @param handler The handler to run {@link #onChange} on, or null if none.
+         */
+        public DownLoadContentObserver(Handler handler) {
+            super(handler);
+        }
+
+        public void registerContentObserver(){
+            getContentResolver().registerContentObserver(Uri.parse("content://downloads/my_downloads/"),false,this);
+        }
+
+        public void unregisterContentObserver(){
+            getContentResolver().unregisterContentObserver(this);
+
+
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            super.onChange(selfChange);
+            schedule();
+        }
+    }
+
+
+    /**
+     * 监听下载进度的回调
+     */
+    public interface OnProgressListener {
+        /**
+         * @param downed   已下载
+         * @param total    总和
+         * @param state 下载进度
+         */
+        void onProgress(int downed, int total, int state);
+
+    }
+
+
 }
